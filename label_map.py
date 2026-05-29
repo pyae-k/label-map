@@ -57,8 +57,11 @@ CONNECTOR_COLOR = "#64748b"
 CONNECTOR_OPACITY = 0.5
 MAP_VIEW_HEIGHT = 650
 MAP_VIEW_WIDTH = 900
+INTERACTIVE_MAP_WIDTH = MAP_VIEW_WIDTH
+INTERACTIVE_MAP_HEIGHT = MAP_VIEW_HEIGHT
 EXPORT_CAPTURE_WIDTH = 1400
 EXPORT_CAPTURE_HEIGHT = 650
+LABEL_SAVE_MESSAGE = "Saving…"
 EXPORT_DEVICE_SCALE = 2
 PLAYWRIGHT_BROWSERS_PATH = os.path.join(app_dir(), ".playwright-browsers")
 
@@ -244,9 +247,9 @@ def make_label_icon_html(name, labels, values, total, show_name, show_values, sh
     return html, icon_w, icon_h
 
 
-def initial_label_latlon(marker, position_key, lat_span, lon_span):
-    dlat = max(lat_span * 0.06, 0.05)
-    dlon = max(lon_span * 0.06, 0.05)
+def scaled_label_latlon(marker, position_key, lat_span, lon_span, scale=1.0):
+    dlat = max(lat_span * 0.06, 0.05) * scale
+    dlon = max(lon_span * 0.06, 0.05) * scale
     offsets = {
         "right": (0, dlon),
         "left": (0, -dlon),
@@ -261,58 +264,234 @@ def initial_label_latlon(marker, position_key, lat_span, lon_span):
     return marker["lat"] + lat_off, marker["lon"] + lon_off
 
 
-def sync_dragged_labels(map_state):
-    if not map_state:
-        return
-    tooltip = map_state.get("last_object_clicked_tooltip")
-    if not tooltip or not str(tooltip).startswith("label:"):
-        return
+def initial_label_latlon(marker, position_key, lat_span, lon_span):
+    return scaled_label_latlon(marker, position_key, lat_span, lon_span, scale=1.0)
+
+
+def label_box_bounds(lat, lon, icon_w, icon_h, lat_span, lon_span, padding=0.12):
+    """Axis-aligned bounds for a DivIcon label anchored at its top-left (lat, lon)."""
+    box_lat, box_lon = estimate_label_deg(icon_w, icon_h, lat_span, lon_span)
+    pad_lat = box_lat * padding
+    pad_lon = box_lon * padding
+    return {
+        "north": lat + pad_lat,
+        "south": lat - box_lat - pad_lat,
+        "west": lon - pad_lon,
+        "east": lon + box_lon + pad_lon,
+    }
+
+
+def label_boxes_overlap(bounds_a, bounds_b):
+    return not (
+        bounds_a["south"] >= bounds_b["north"]
+        or bounds_a["north"] <= bounds_b["south"]
+        or bounds_a["east"] <= bounds_b["west"]
+        or bounds_a["west"] >= bounds_b["east"]
+    )
+
+
+def marker_neighbor_count(marker, marker_rows, threshold):
+    count = 0
+    for other in marker_rows:
+        if other["idx"] == marker["idx"]:
+            continue
+        if latlon_distance(marker["lat"], marker["lon"], other["lat"], other["lon"]) < threshold:
+            count += 1
+    return count
+
+
+def generate_label_placement_candidates(marker, lat_span, lon_span):
+    """Candidates ordered by distance from the chart point (nearest first)."""
+    candidates = []
+    seen = set()
+
+    def add_candidate(lat, lon):
+        key = (round(lat, 6), round(lon, 6))
+        if key in seen:
+            return
+        seen.add(key)
+        dist = math.hypot(lat - marker["lat"], lon - marker["lon"])
+        candidates.append((dist, lat, lon))
+
+    for scale in (1.0, 1.15, 1.3, 1.5, 1.75, 2.0, 2.5, 3.0, 3.75, 4.5):
+        for position_key in LABEL_POSITION_ORDER:
+            lat, lon = scaled_label_latlon(
+                marker, position_key, lat_span, lon_span, scale
+            )
+            add_candidate(lat, lon)
+
+    candidates.sort(key=lambda item: item[0])
+    return candidates
+
+
+def place_labels_near_markers(marker_rows, label_sizes, lat_span, lon_span):
+    """Place each label as close as possible to its point while avoiding overlap."""
+    if not marker_rows:
+        return {}
+
+    overlap_threshold = min(lat_span, lon_span) * 0.06
+    markers_with_labels = [
+        marker
+        for marker in marker_rows
+        if label_sizes.get(marker["idx"], (0, 0)) != (0, 0)
+    ]
+    placement_order = sorted(
+        markers_with_labels,
+        key=lambda marker: -marker_neighbor_count(marker, marker_rows, overlap_threshold),
+    )
+
+    placed_bounds = []
+    result = {}
+    for marker in placement_order:
+        idx = marker["idx"]
+        icon_w, icon_h = label_sizes[idx]
+        chosen = None
+        for _, lat, lon in generate_label_placement_candidates(
+            marker, lat_span, lon_span
+        ):
+            bounds = label_box_bounds(lat, lon, icon_w, icon_h, lat_span, lon_span)
+            if any(label_boxes_overlap(bounds, prev) for prev in placed_bounds):
+                continue
+            chosen = (lat, lon)
+            placed_bounds.append(bounds)
+            break
+
+        if chosen is None:
+            candidates = generate_label_placement_candidates(
+                marker, lat_span, lon_span
+            )
+            chosen = (candidates[-1][1], candidates[-1][2]) if candidates else (
+                scaled_label_latlon(marker, "right", lat_span, lon_span)
+            )
+            placed_bounds.append(
+                label_box_bounds(chosen[0], chosen[1], icon_w, icon_h, lat_span, lon_span)
+            )
+        result[idx] = chosen
+
+    return result
+
+
+def _coords_unchanged(old_lat, old_lon, new_lat, new_lon, eps=1e-7):
+    if old_lat is None or old_lon is None:
+        return False
+    return math.isclose(old_lat, new_lat, abs_tol=eps) and math.isclose(
+        old_lon, new_lon, abs_tol=eps
+    )
+
+
+def persist_map_view(center_lat, center_lon, zoom, upload_key):
+    zoom_val = normalize_zoom(zoom)
+    if zoom_val is None:
+        zoom_val = st.session_state.get("map_view", {}).get("zoom", 10)
+    st.session_state["map_view"] = {
+        "center_lat": float(center_lat),
+        "center_lon": float(center_lon),
+        "zoom": zoom_val,
+    }
+    st.session_state["map_view_upload_key"] = upload_key
+
+
+def parse_label_drag_tooltip(tooltip):
+    """Parse label drag payload: label:{idx}:{lat}:{lon}|{center_lat},{center_lon},{zoom}."""
+    text = str(tooltip)
+    if not text.startswith("label:"):
+        return None
+    payload, _, view_part = text.partition("|")
     try:
-        _, idx, lat, lon = str(tooltip).split(":", 3)
-        st.session_state[f"label_lat_{idx}"] = float(lat)
-        st.session_state[f"label_lon_{idx}"] = float(lon)
+        _, idx, lat, lon = payload.split(":", 3)
+        result = {
+            "idx": idx,
+            "lat": float(lat),
+            "lon": float(lon),
+            "center_lat": None,
+            "center_lon": None,
+            "zoom": None,
+        }
     except (ValueError, IndexError):
-        return
+        return None
+    if view_part:
+        try:
+            center_lat, center_lon, zoom = view_part.split(",", 2)
+            result["center_lat"] = float(center_lat)
+            result["center_lon"] = float(center_lon)
+            result["zoom"] = float(zoom)
+        except (ValueError, IndexError):
+            pass
+    return result
+
+
+def sync_dragged_labels(map_state, upload_key):
+    if not map_state:
+        return False
+    tooltip = map_state.get("last_object_clicked_tooltip")
+    drag = parse_label_drag_tooltip(tooltip)
+    if not drag:
+        return False
+
+    lat_key = f"label_lat_{drag['idx']}"
+    lon_key = f"label_lon_{drag['idx']}"
+    label_moved = not _coords_unchanged(
+        st.session_state.get(lat_key),
+        st.session_state.get(lon_key),
+        drag["lat"],
+        drag["lon"],
+    )
+    if label_moved:
+        st.session_state[lat_key] = drag["lat"]
+        st.session_state[lon_key] = drag["lon"]
+
+    if drag["center_lat"] is not None and drag["center_lon"] is not None:
+        persist_map_view(
+            drag["center_lat"],
+            drag["center_lon"],
+            drag["zoom"],
+            upload_key,
+        )
+
+    return label_moved
+
+
+def default_map_view_from_df(df, lat_col, lon_col):
+    fit = fit_bounds_for_points(df, lat_col, lon_col)
+    min_lat, min_lon = fit[0]
+    max_lat, max_lon = fit[1]
+    zoom = best_zoom(
+        min_lon, max_lon, min_lat, max_lat, EXPORT_CAPTURE_WIDTH, EXPORT_CAPTURE_HEIGHT
+    )
+    return {
+        "center_lat": (min_lat + max_lat) / 2,
+        "center_lon": (min_lon + max_lon) / 2,
+        "zoom": max(2, min(16, int(zoom))),
+    }
+
+
+def get_map_view(df, lat_col, lon_col, upload_key):
+    view = st.session_state.get("map_view")
+    if view and st.session_state.get("map_view_upload_key") == upload_key:
+        return view
+    view = default_map_view_from_df(df, lat_col, lon_col)
+    st.session_state["map_view"] = view
+    st.session_state["map_view_upload_key"] = upload_key
+    return view
+
+
+def build_interactive_map(df, lat_col, lon_col, upload_key):
+    view = get_map_view(df, lat_col, lon_col, upload_key)
+    m = folium.Map(
+        location=[view["center_lat"], view["center_lon"]],
+        zoom_start=view["zoom"],
+        tiles="OpenStreetMap",
+    )
+    MapViewRestore(m.get_name(), view["center_lat"], view["center_lon"], view["zoom"]).add_to(
+        m
+    )
+    return m, view
 
 
 def estimate_label_deg(icon_w, icon_h, lat_span, lon_span):
     deg_lon = lon_span * (icon_w / MAP_VIEW_WIDTH)
     deg_lat = lat_span * (icon_h / MAP_VIEW_HEIGHT)
     return max(deg_lat, lat_span * 0.015), max(deg_lon, lon_span * 0.015)
-
-
-def resolve_label_overlaps(marker_rows, label_positions, label_sizes, lat_span, lon_span):
-    adjusted = {idx: [pos[0], pos[1]] for idx, pos in label_positions.items()}
-    idx_list = [marker["idx"] for marker in marker_rows]
-
-    for _ in range(50):
-        for i, idx_a in enumerate(idx_list):
-            for idx_b in idx_list[i + 1 :]:
-                lat_a, lon_a = adjusted[idx_a]
-                lat_b, lon_b = adjusted[idx_b]
-                w_a, h_a = label_sizes[idx_a]
-                w_b, h_b = label_sizes[idx_b]
-                box_lat_a, box_lon_a = estimate_label_deg(w_a, h_a, lat_span, lon_span)
-                box_lat_b, box_lon_b = estimate_label_deg(w_b, h_b, lat_span, lon_span)
-
-                min_lat_sep = (box_lat_a + box_lat_b) * 0.55
-                min_lon_sep = (box_lon_a + box_lon_b) * 0.55
-                dlat = lat_a - lat_b
-                dlon = lon_a - lon_b
-
-                push_lat = min_lat_sep - abs(dlat)
-                push_lon = min_lon_sep - abs(dlon)
-                if push_lat <= 0 or push_lon <= 0:
-                    continue
-
-                shift_lat = push_lat / 2 * (1 if dlat >= 0 else -1 or 1)
-                shift_lon = push_lon / 2 * (1 if dlon >= 0 else -1 or 1)
-                adjusted[idx_a][0] += shift_lat
-                adjusted[idx_a][1] += shift_lon
-                adjusted[idx_b][0] -= shift_lat
-                adjusted[idx_b][1] -= shift_lon
-
-    return {idx: (coords[0], coords[1]) for idx, coords in adjusted.items()}
 
 
 def connector_points_px(chart_px, label_px, icon_w, icon_h, chart_radius_px):
@@ -409,15 +588,147 @@ class DynamicConnectors(MacroElement):
         self.connector_opacity = CONNECTOR_OPACITY
 
 
+class MapDragGuard(MacroElement):
+    """Block label drags and show overlay while Streamlit saves a moved label."""
+
+    _template = Template(
+        """
+        {% macro script(this, kwargs) %}
+        (function() {
+            var map = {{ this.map_name }};
+            var markerNames = {{ this.marker_names | tojson }};
+            var initiallyLocked = {{ this.initially_locked | tojson }};
+            window._labelMapInstance = map;
+
+            function forEachLabelMarker(fn) {
+                markerNames.forEach(function(name) {
+                    var marker = window[name];
+                    if (marker) fn(marker);
+                });
+            }
+
+            function ensureOverlay() {
+                var overlay = map._labelMapSyncOverlay;
+                if (overlay) return overlay;
+                overlay = L.DomUtil.create('div', 'label-map-sync-overlay', map.getContainer());
+                overlay.style.cssText = [
+                    'position:absolute', 'inset:0', 'z-index:10000',
+                    'background:rgba(255,255,255,0.55)', 'display:none',
+                    'align-items:center', 'justify-content:center',
+                    'pointer-events:all', 'cursor:wait',
+                    'font:600 14px/1 system-ui,sans-serif', 'color:#334155'
+                ].join(';');
+                overlay.innerHTML = (
+                    '<div style="padding:8px 14px;background:rgba(255,255,255,0.96);' +
+                    'border-radius:6px;box-shadow:0 1px 8px rgba(15,23,42,0.1);">' +
+                    {{ this.save_message | tojson }} + '</div>'
+                );
+                map._labelMapSyncOverlay = overlay;
+                return overlay;
+            }
+
+            window._lockLabelMapDrags = function() {
+                window._labelMapDragLocked = true;
+                var overlay = ensureOverlay();
+                overlay.style.display = 'flex';
+                forEachLabelMarker(function(marker) {
+                    if (marker.dragging) marker.dragging.disable();
+                });
+            };
+
+            window._unlockLabelMapDrags = function() {
+                window._labelMapDragLocked = false;
+                var overlay = map._labelMapSyncOverlay;
+                if (overlay) overlay.style.display = 'none';
+                forEachLabelMarker(function(marker) {
+                    if (marker.dragging) marker.dragging.enable();
+                });
+            };
+
+            map.whenReady(function() {
+                ensureOverlay();
+                if (initiallyLocked) {
+                    window._lockLabelMapDrags();
+                } else {
+                    window._unlockLabelMapDrags();
+                }
+            });
+        })();
+        {% endmacro %}
+        """
+    )
+
+    def __init__(self, map_name, marker_names, initially_locked=False, save_message=LABEL_SAVE_MESSAGE):
+        super().__init__()
+        self._name = "MapDragGuard"
+        self.map_name = map_name
+        self.marker_names = marker_names
+        self.initially_locked = initially_locked
+        self.save_message = save_message
+
+
+class MapSaveComplete(MacroElement):
+    """Unlock the map only after a save-cycle render has finished loading."""
+
+    _template = Template(
+        """
+        {% macro script(this, kwargs) %}
+        (function() {
+            var map = {{ this.map_name }};
+            map.whenReady(function() {
+                if (window._unlockLabelMapDrags) {
+                    window._unlockLabelMapDrags();
+                }
+                if (window._updateMapConnectors) {
+                    window._updateMapConnectors();
+                }
+            });
+        })();
+        {% endmacro %}
+        """
+    )
+
+    def __init__(self, map_name):
+        super().__init__()
+        self._name = "MapSaveComplete"
+        self.map_name = map_name
+
+
 class LabelDragSync(MacroElement):
     _template = Template(
         """
         {% macro script(this, kwargs) %}
         {% for item in this.items %}
+        {{ item.marker_name }}.on('dragstart', function(e) {
+            if (window._labelMapDragLocked) {
+                if (e.target._labelDragOrigin) {
+                    e.target.setLatLng(e.target._labelDragOrigin);
+                }
+                if (e.target.dragging) e.target.dragging.disable();
+                return;
+            }
+            e.target._labelDragOrigin = e.target.getLatLng();
+        });
         {{ item.marker_name }}.on('dragend', function(e) {
+            if (window._labelMapDragLocked) {
+                if (e.target._labelDragOrigin) {
+                    e.target.setLatLng(e.target._labelDragOrigin);
+                }
+                return;
+            }
+            window._labelMapDragLocked = true;
+            if (window._lockLabelMapDrags) {
+                window._lockLabelMapDrags();
+            }
             var ll = e.target.getLatLng();
+            var map = e.target._map;
+            var viewPart = '';
+            if (map) {
+                var center = map.getCenter();
+                viewPart = '|' + center.lat + ',' + center.lng + ',' + map.getZoom();
+            }
             e.target.setTooltipContent(
-                'label:{{ item.idx }}:' + ll.lat + ':' + ll.lng
+                'label:{{ item.idx }}:' + ll.lat + ':' + ll.lng + viewPart
             );
             if (window._updateMapConnectors) {
                 window._updateMapConnectors();
@@ -433,6 +744,49 @@ class LabelDragSync(MacroElement):
         super().__init__()
         self._name = "LabelDragSync"
         self.items = items
+
+
+class MapViewRestore(MacroElement):
+    """Apply saved center/zoom without animation after map init (stable label drags)."""
+
+    _template = Template(
+        """
+        {% macro script(this, kwargs) %}
+        (function() {
+            var map = {{ this.map_name }};
+            map.whenReady(function() {
+                var targetLat = {{ this.center_lat }};
+                var targetLon = {{ this.center_lon }};
+                var targetZoom = {{ this.zoom }};
+                var center = map.getCenter();
+                var needsView = (
+                    Math.abs(center.lat - targetLat) > 1e-6 ||
+                    Math.abs(center.lng - targetLon) > 1e-6 ||
+                    map.getZoom() !== targetZoom
+                );
+                if (needsView) {
+                    map.setView(
+                        [targetLat, targetLon],
+                        targetZoom,
+                        {animate: false}
+                    );
+                }
+                if (window._updateMapConnectors) {
+                    window._updateMapConnectors();
+                }
+            });
+        })();
+        {% endmacro %}
+        """
+    )
+
+    def __init__(self, map_name, center_lat, center_lon, zoom):
+        super().__init__()
+        self._name = "MapViewRestore"
+        self.map_name = map_name
+        self.center_lat = center_lat
+        self.center_lon = center_lon
+        self.zoom = zoom
 
 
 class ExportMapStyles(MacroElement):
@@ -607,7 +961,7 @@ def parse_map_view(map_state, df, lat_col, lon_col):
                 bounds = normalize_bounds(
                     {"south": south, "west": west, "north": north, "east": east}
                 )
-    if bounds is None:
+    if bounds is None and df is not None and lat_col is not None and lon_col is not None:
         fit = fit_bounds_for_points(df, lat_col, lon_col)
         bounds = normalize_bounds(
             {
@@ -642,6 +996,8 @@ def populate_map_layers(
     show_values,
     show_total,
     draggable_labels=True,
+    drag_locked=False,
+    unlock_after_save=False,
 ):
     drag_sync_items = []
     connector_items = []
@@ -702,8 +1058,90 @@ def populate_map_layers(
     if connector_items:
         DynamicConnectors(m.get_name(), connector_items, CHART_ICON_SIZE // 2).add_to(m)
     if draggable_labels and drag_sync_items:
+        label_marker_names = [item["marker_name"] for item in drag_sync_items]
+        MapDragGuard(m.get_name(), label_marker_names, drag_locked).add_to(m)
         LabelDragSync(drag_sync_items).add_to(m)
+        if unlock_after_save:
+            MapSaveComplete(m.get_name()).add_to(m)
     return connector_items
+
+
+def label_positions_from_session(marker_rows, lat_span, lon_span):
+    positions = {}
+    for marker in marker_rows:
+        idx = marker["idx"]
+        positions[idx] = (
+            st.session_state.get(
+                f"label_lat_{idx}",
+                scaled_label_latlon(marker, "right", lat_span, lon_span),
+            ),
+            st.session_state.get(f"label_lon_{idx}", marker["lon"]),
+        )
+    return positions
+
+
+@st.fragment
+def render_label_map_fragment(
+    df,
+    lat_col,
+    lon_col,
+    upload_key,
+    marker_rows,
+    lat_span,
+    lon_span,
+    min_total,
+    max_total,
+    marker_type,
+    chart_colors,
+    scale_by_total,
+    show_name,
+    show_values,
+    show_total,
+):
+    """Map-only rerun on label drag; preserves zoom and blocks drags while saving."""
+    completing_save = st.session_state.get("map_label_updating", False)
+    prior_map_state = st.session_state.get("label_map")
+    if isinstance(prior_map_state, dict):
+        sync_dragged_labels(prior_map_state, upload_key)
+
+    label_positions = label_positions_from_session(marker_rows, lat_span, lon_span)
+
+    m, map_view = build_interactive_map(df, lat_col, lon_col, upload_key)
+    populate_map_layers(
+        m,
+        marker_rows,
+        label_positions,
+        min_total,
+        max_total,
+        marker_type,
+        chart_colors,
+        scale_by_total,
+        show_name,
+        show_values,
+        show_total,
+        draggable_labels=True,
+        drag_locked=completing_save,
+        unlock_after_save=completing_save,
+    )
+    map_state = st_folium(
+        m,
+        width=INTERACTIVE_MAP_WIDTH,
+        height=INTERACTIVE_MAP_HEIGHT,
+        center=(map_view["center_lat"], map_view["center_lon"]),
+        zoom=map_view["zoom"],
+        key="label_map",
+        returned_objects=["last_object_clicked_tooltip"],
+    )
+
+    label_moved = sync_dragged_labels(map_state, upload_key)
+    if label_moved:
+        st.session_state["map_label_updating"] = True
+    elif completing_save:
+        st.session_state["map_label_updating"] = False
+
+    st.caption(
+        "Drag labels to adjust. Map zoom is kept while each move saves."
+    )
 
 
 def ensure_playwright_browser():
@@ -991,65 +1429,6 @@ def build_map_jpeg_export(
 
 def latlon_distance(lat1, lon1, lat2, lon2):
     return math.hypot(lat2 - lat1, lon2 - lon1)
-
-
-def label_positions_conflict(pos_a, pos_b):
-    if pos_a == pos_b:
-        return True
-    primary = {"below", "above", "left", "right"}
-    if pos_a in primary and pos_b in primary:
-        opposites = {("below", "above"), ("above", "below"), ("left", "right"), ("right", "left")}
-        return (pos_a, pos_b) not in opposites
-    return pos_a.split("-")[0] == pos_b.split("-")[0]
-
-
-def resolve_label_positions(marker_rows, min_distance):
-    if not marker_rows:
-        return {}
-    center_lat = sum(m["lat"] for m in marker_rows) / len(marker_rows)
-    center_lon = sum(m["lon"] for m in marker_rows) / len(marker_rows)
-
-    def preferred_positions(marker):
-        order = list(LABEL_POSITION_ORDER)
-        if marker["lon"] >= center_lon:
-            order = ["left", "above-left", "below-left"] + [
-                p for p in order if p not in {"left", "above-left", "below-left"}
-            ]
-        else:
-            order = ["right", "above-right", "below-right"] + [
-                p for p in order if p not in {"right", "above-right", "below-right"}
-            ]
-        if marker["lat"] >= center_lat:
-            order = ["below", "below-right", "below-left"] + [
-                p for p in order if not p.startswith("below")
-            ]
-        else:
-            order = ["above", "above-right", "above-left"] + [
-                p for p in order if not p.startswith("above")
-            ]
-        return order
-
-    assignments = {}
-    placed = []
-    for marker in marker_rows:
-        chosen = preferred_positions(marker)[0]
-        for position_key in preferred_positions(marker):
-            conflict = False
-            for placed_lat, placed_lon, placed_pos in placed:
-                if latlon_distance(marker["lat"], marker["lon"], placed_lat, placed_lon) >= min_distance:
-                    continue
-                if label_positions_conflict(position_key, placed_pos):
-                    conflict = True
-                    break
-            if not conflict:
-                chosen = position_key
-                break
-        else:
-            prefs = preferred_positions(marker)
-            chosen = prefs[len(placed) % len(prefs)]
-        assignments[marker["idx"]] = chosen
-        placed.append((marker["lat"], marker["lon"], chosen))
-    return assignments
 
 
 def deg_lonlat_to_global_pixels(lon, lat, zoom):
@@ -1368,6 +1747,9 @@ if uploaded_file is not None:
         if st.session_state.get("active_upload_key") != upload_key:
             st.session_state["active_upload_key"] = upload_key
             st.session_state.pop("labels_overlap_resolved", None)
+            st.session_state.pop("map_view", None)
+            st.session_state.pop("map_view_upload_key", None)
+            st.session_state.pop("map_label_updating", None)
             for key in list(st.session_state.keys()):
                 if key.startswith("label_lat_") or key.startswith("label_lon_"):
                     del st.session_state[key]
@@ -1509,8 +1891,6 @@ if uploaded_file is not None:
             max_total = max(totals) if totals else 1
             lat_span = df[lat_col].max() - df[lat_col].min() or 1
             lon_span = df[lon_col].max() - df[lon_col].min() or 1
-            overlap_threshold = min(lat_span, lon_span) * 0.06
-            auto_label_positions = resolve_label_positions(marker_rows, overlap_threshold)
             label_positions = {}
             label_sizes = {}
 
@@ -1527,25 +1907,26 @@ if uploaded_file is not None:
                 )
                 label_sizes[idx] = (icon_w, icon_h)
 
-                if f"label_lat_{idx}" not in st.session_state:
-                    init_lat, init_lon = initial_label_latlon(
-                        marker, auto_label_positions[idx], lat_span, lon_span
-                    )
-                    st.session_state[f"label_lat_{idx}"] = init_lat
-                    st.session_state[f"label_lon_{idx}"] = init_lon
+            label_layout_sig = (
+                show_name,
+                show_values,
+                show_total,
+                tuple(value_cols),
+            )
+            if st.session_state.get("_label_layout_sig") != label_layout_sig:
+                st.session_state.pop("labels_overlap_resolved", None)
+                for key in list(st.session_state.keys()):
+                    if key.startswith("label_lat_") or key.startswith("label_lon_"):
+                        del st.session_state[key]
+            st.session_state["_label_layout_sig"] = label_layout_sig
 
             if labels_enabled(show_name, show_values, show_total):
                 if not st.session_state.get("labels_overlap_resolved"):
-                    draft_positions = {
-                        idx: (
-                            st.session_state[f"label_lat_{idx}"],
-                            st.session_state[f"label_lon_{idx}"],
-                        )
-                        for idx in label_sizes
-                        if label_sizes[idx] != (0, 0)
-                    }
-                    resolved = resolve_label_overlaps(
-                        marker_rows, draft_positions, label_sizes, lat_span, lon_span
+                    resolved = place_labels_near_markers(
+                        marker_rows,
+                        label_sizes,
+                        lat_span,
+                        lon_span,
                     )
                     for idx, (lat, lon) in resolved.items():
                         st.session_state[f"label_lat_{idx}"] = lat
@@ -1555,8 +1936,14 @@ if uploaded_file is not None:
             for marker in marker_rows:
                 idx = marker["idx"]
                 label_positions[idx] = (
-                    st.session_state[f"label_lat_{idx}"],
-                    st.session_state[f"label_lon_{idx}"],
+                    st.session_state.get(
+                        f"label_lat_{idx}",
+                        scaled_label_latlon(marker, "right", lat_span, lon_span),
+                    ),
+                    st.session_state.get(
+                        f"label_lon_{idx}",
+                        marker["lon"],
+                    ),
                 )
 
             st.subheader("Data preview")
@@ -1569,15 +1956,14 @@ if uploaded_file is not None:
             st.dataframe(preview_df, use_container_width=True)
 
             st.subheader("Map")
-            m = folium.Map(
-                location=[df[lat_col].mean(), df[lon_col].mean()],
-                tiles="OpenStreetMap",
-            )
-            m.fit_bounds(fit_bounds_for_points(df, lat_col, lon_col))
-            populate_map_layers(
-                m,
+            render_label_map_fragment(
+                df,
+                lat_col,
+                lon_col,
+                upload_key,
                 marker_rows,
-                label_positions,
+                lat_span,
+                lon_span,
                 min_total,
                 max_total,
                 marker_type,
@@ -1586,31 +1972,6 @@ if uploaded_file is not None:
                 show_name,
                 show_values,
                 show_total,
-                draggable_labels=True,
-            )
-
-            map_state = st_folium(
-                m,
-                width=EXPORT_CAPTURE_WIDTH,
-                height=EXPORT_CAPTURE_HEIGHT,
-                key="label_map",
-                returned_objects=[
-                    "last_object_clicked",
-                    "last_object_clicked_tooltip",
-                    "bounds",
-                    "zoom",
-                ],
-            )
-            sync_dragged_labels(map_state)
-            for marker in marker_rows:
-                idx = marker["idx"]
-                label_positions[idx] = (
-                    st.session_state[f"label_lat_{idx}"],
-                    st.session_state[f"label_lon_{idx}"],
-                )
-
-            st.caption(
-                "Drag labels to reposition. Lines connect each chart to the nearest label edge and update while you move."
             )
     except Exception as e:
         st.error(f"Could not process file: {str(e)}")

@@ -1,54 +1,21 @@
-# LabelMap
+# LabelMap (Streamlit Cloud)
 
-Turn location spreadsheets into interactive maps with pie or column charts and draggable labels.
+Interactive map from spreadsheets: pie/column markers, auto-placed labels, drag to adjust.
 
-Deploy this folder to [Streamlit Community Cloud](https://share.streamlit.io).
-
-## Quick deploy
-
-1. Create a **GitHub repository** (public or private).
-2. Upload **all files in this folder** as the **repo root**.
-3. Go to [share.streamlit.io](https://share.streamlit.io) → **Create app**.
-4. Select your repo and set **Main file path** to:
-
-   ```
-   label_map.py
-   ```
-
-5. Click **Deploy**.
-
-## Repo files (upload all of these)
-
-| File | Purpose |
-|------|---------|
-| `label_map.py` | Main app |
-| `requirements.txt` | Python dependencies |
-| `.streamlit/config.toml` | App settings |
-| `.gitignore` | Excludes secrets and caches |
-| `README.md` | This file |
-
-## Features on Streamlit Cloud
-
-- Upload CSV or Excel spreadsheets
-- Column mapping (location, latitude, longitude, values)
-- Pie and column chart markers
-- Draggable labels with connector lines
-
-Upload a spreadsheet to start — no sample file is loaded automatically.
-
-## Privacy
-
-Uploads are processed on Streamlit Cloud to build your map in this session. See [Streamlit's privacy policy](https://streamlit.io/privacy-policy).
-
-## Local run (optional)
+## Run locally
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements.txt
 streamlit run label_map.py
 ```
 
-## Contact
+## Deploy on Streamlit Community Cloud
 
-Pyae Phyo Kyaw — [pyaek@icloud.com](mailto:pyaek@icloud.com) · [LinkedIn](https://www.linkedin.com/in/pyaek)
+1. Push this repo to GitHub.
+2. Connect at [share.streamlit.io](https://share.streamlit.io).
+3. **Main file path:** `label_map.py`
+4. **Python:** 3.11
+
+No secrets required. Map tiles need internet (OpenStreetMap).
