@@ -26,20 +26,6 @@ def app_dir():
         return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
 
-
-def is_streamlit_cloud():
-    """True when running on Streamlit Community Cloud (not local/desktop bundle)."""
-    if os.environ.get("STREAMLIT_RUNTIME_ENV") == "cloud":
-        return True
-    if os.environ.get("STREAMLIT_SHARING_MODE"):
-        return True
-    return False
-
-
-def jpeg_export_supported():
-    """JPEG export uses Playwright locally; unavailable on Streamlit Cloud."""
-    return not is_streamlit_cloud()
-
 st.set_page_config(
     page_title="LabelMap",
     page_icon="📊",
@@ -85,12 +71,11 @@ CONTACT_EMAIL = "pyaek@icloud.com"
 CONTACT_LINKEDIN = "https://www.linkedin.com/in/pyaek"
 ABOUT_TEXT = (
     "LabelMap turns location spreadsheets into interactive maps with pie or column "
-    "charts, draggable labels, and JPEG export."
+    "charts and draggable labels."
 )
 HOW_IT_WORKS_STEPS = (
     "Upload your spreadsheet",
     "View and adjust the map",
-    "Download the map (JPEG)",
 )
 
 
@@ -123,7 +108,7 @@ def render_app_intro():
         f'<p style="color:#6b7280;font-size:0.95rem;margin:0 0 0.75rem 0;">{HERO_TAGLINE}</p>',
         unsafe_allow_html=True,
     )
-    step_cols = st.columns(3)
+    step_cols = st.columns(len(HOW_IT_WORKS_STEPS))
     for col, step in zip(step_cols, HOW_IT_WORKS_STEPS):
         with col:
             st.markdown(
@@ -724,9 +709,6 @@ def populate_map_layers(
 def ensure_playwright_browser():
     import subprocess
     import sys
-
-    if is_streamlit_cloud():
-        raise RuntimeError("Playwright browser install is not supported on Streamlit Cloud.")
 
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", PLAYWRIGHT_BROWSERS_PATH)
     if os.path.isdir(PLAYWRIGHT_BROWSERS_PATH) and os.listdir(PLAYWRIGHT_BROWSERS_PATH):
@@ -1630,59 +1612,6 @@ if uploaded_file is not None:
             st.caption(
                 "Drag labels to reposition. Lines connect each chart to the nearest label edge and update while you move."
             )
-
-            st.divider()
-            if not jpeg_export_supported():
-                st.caption(
-                    "JPEG download is available in the desktop app. "
-                    "On Streamlit Cloud, use the interactive map above."
-                )
-            elif map_export_ready(map_state):
-                export_signature = export_state_signature(
-                    upload_key,
-                    map_state,
-                    label_positions,
-                    marker_type,
-                    chart_colors,
-                    st.session_state.scale_by_total,
-                    st.session_state.show_lbl_name,
-                    st.session_state.show_lbl_values,
-                    st.session_state.show_lbl_total,
-                )
-                try:
-                    jpeg_data = build_map_jpeg_export(
-                        export_signature,
-                        df,
-                        lat_col,
-                        lon_col,
-                        marker_rows,
-                        label_positions,
-                        map_state,
-                        min_total,
-                        max_total,
-                        marker_type,
-                        chart_colors,
-                        st.session_state.scale_by_total,
-                        st.session_state.show_lbl_name,
-                        st.session_state.show_lbl_values,
-                        st.session_state.show_lbl_total,
-                    )
-                except Exception as e:
-                    st.error(f"Map export failed: {e}")
-                else:
-                    st.download_button(
-                        label="Download map (JPEG)",
-                        data=jpeg_data,
-                        file_name="label_map.jpg",
-                        mime="image/jpeg",
-                        type="primary",
-                        key="download_map_jpeg",
-                    )
-                    st.caption(
-                        "Adjust the map first, then click download. Your browser will ask where to save the file."
-                    )
-            else:
-                st.caption("Preparing map export…")
     except Exception as e:
         st.error(f"Could not process file: {str(e)}")
 else:
