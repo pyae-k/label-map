@@ -87,6 +87,16 @@ def template_file_path():
     return path if os.path.exists(path) else None
 
 
+def resolve_spreadsheet_source(uploaded_file):
+    """Use uploaded file when present; otherwise load bundled map.xlsx as the example."""
+    if uploaded_file is not None:
+        return uploaded_file, uploaded_file.name, False
+    sample_path = template_file_path()
+    if sample_path:
+        return sample_path, os.path.basename(sample_path), True
+    return None, None, False
+
+
 def read_spreadsheet(source):
     if isinstance(source, str):
         if source.lower().endswith(".csv"):
@@ -1738,11 +1748,16 @@ st.markdown(
 
 st.divider()
 
-if uploaded_file is not None:
+data_source, data_label, using_sample = resolve_spreadsheet_source(uploaded_file)
+if using_sample:
+    st.caption(
+        "Showing sample data from **map.xlsx**. Upload your own spreadsheet above to replace it."
+    )
+
+if data_source is not None:
     try:
-        df = read_spreadsheet(uploaded_file)
-        data_label = uploaded_file.name
-        upload_key = spreadsheet_upload_key(uploaded_file, df)
+        df = read_spreadsheet(data_source)
+        upload_key = spreadsheet_upload_key(data_source, df)
 
         if st.session_state.get("active_upload_key") != upload_key:
             st.session_state["active_upload_key"] = upload_key
