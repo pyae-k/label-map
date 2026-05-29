@@ -7,6 +7,7 @@ from jinja2 import Template
 import tempfile
 import os
 import sys
+from pathlib import Path
 import base64
 from functools import lru_cache
 from io import BytesIO
@@ -83,13 +84,46 @@ HOW_IT_WORKS_STEPS = (
 
 
 def template_file_path():
-    path = os.path.join(app_dir(), "map.xlsx")
-    return path if os.path.exists(path) else None
+    """Locate bundled map.xlsx next to the app script or repo root (Streamlit Cloud)."""
+    name = "map.xlsx"
+    search_dirs = []
+    env_dir = os.environ.get("LABELMAP_APP_DIR")
+    if env_dir:
+        search_dirs.append(Path(env_dir))
+    search_dirs.append(Path(__file__).resolve().parent)
+    search_dirs.append(Path.cwd())
+    seen = set()
+    for base in search_dirs:
+        base = base.resolve()
+        if base in seen:
+            continue
+        seen.add(base)
+        path = base / name
+        if path.is_file():
+            return str(path)
+    return None
+
+
+@st.cache_data(show_spinner=False)
+def load_sample_dataframe():
+    sample_path = template_file_path()
+    if not sample_path:
+        return None
+    return pd.read_excel(sample_path)
+
+
+def user_uploaded_spreadsheet(uploaded_file):
+    if uploaded_file is None:
+        return False
+    size = getattr(uploaded_file, "size", None)
+    if size is not None:
+        return size > 0
+    return True
 
 
 def resolve_spreadsheet_source(uploaded_file):
     """Use uploaded file when present; otherwise load bundled map.xlsx as the example."""
-    if uploaded_file is not None:
+    if user_uploaded_spreadsheet(uploaded_file):
         return uploaded_file, uploaded_file.name, False
     sample_path = template_file_path()
     if sample_path:
@@ -1737,6 +1771,7 @@ uploaded_file = st.file_uploader(
     "Spreadsheet",
     type=["xlsx", "xls", "csv"],
     help="Column A: location, B: latitude, C: longitude, D onward: health value columns",
+    key="user_spreadsheet",
 )
 render_template_link()
 st.markdown(
@@ -1753,10 +1788,20 @@ if using_sample:
     st.caption(
         "Showing sample data from **map.xlsx**. Upload your own spreadsheet above to replace it."
     )
+elif not user_uploaded_spreadsheet(uploaded_file) and template_file_path() is None:
+    st.warning(
+        "Sample file **map.xlsx** was not found in the app folder. "
+        "Upload a spreadsheet to build your map."
+    )
 
 if data_source is not None:
     try:
-        df = read_spreadsheet(data_source)
+        if using_sample:
+            df = load_sample_dataframe()
+            if df is None:
+                raise FileNotFoundError("map.xlsx sample could not be loaded")
+        else:
+            df = read_spreadsheet(data_source)
         upload_key = spreadsheet_upload_key(data_source, df)
 
         if st.session_state.get("active_upload_key") != upload_key:
