@@ -2,12 +2,47 @@
 
 import math
 
+MERCATOR_MAX_LAT = 85.05112878
+
 
 def latlon_distance(lat1, lon1, lat2, lon2):
     return math.hypot(lat2 - lat1, lon2 - lon1)
 
 
+def _normalize_lon_lat(lon, lat):
+    try:
+        lon_value = float(lon)
+        lat_value = float(lat)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Longitude and latitude must be numeric.") from exc
+
+    if not (math.isfinite(lon_value) and math.isfinite(lat_value)):
+        raise ValueError("Longitude and latitude must be finite numbers.")
+    if not (-180.0 <= lon_value <= 180.0):
+        raise ValueError(f"Longitude must be between -180 and 180, got {lon_value}")
+    if not (-90.0 <= lat_value <= 90.0):
+        raise ValueError(f"Latitude must be between -90 and 90, got {lat_value}")
+
+    lat_value = max(-MERCATOR_MAX_LAT, min(MERCATOR_MAX_LAT, lat_value))
+    return lon_value, lat_value
+
+
+def normalize_lat_lon_for_projection(lon, lat):
+    """Wrap longitude and clamp latitude so placement offsets can be projected."""
+    lon_value = float(lon)
+    lat_value = float(lat)
+    if not (math.isfinite(lon_value) and math.isfinite(lat_value)):
+        raise ValueError("Longitude and latitude must be finite numbers.")
+    while lon_value > 180.0:
+        lon_value -= 360.0
+    while lon_value < -180.0:
+        lon_value += 360.0
+    lat_value = max(-MERCATOR_MAX_LAT, min(MERCATOR_MAX_LAT, lat_value))
+    return lon_value, lat_value
+
+
 def deg_lonlat_to_global_pixels(lon, lat, zoom):
+    lon, lat = _normalize_lon_lat(lon, lat)
     lat_rad = math.radians(lat)
     n = 2.0**zoom
     x = (lon + 180.0) / 360.0 * 256.0 * n
@@ -31,8 +66,14 @@ def fit_bounds_for_points(df, lat_col, lon_col, padding=0.12):
     lat_pad = (max_lat - min_lat) * padding
     lon_pad = (max_lon - min_lon) * padding
     return [
-        [min_lat - lat_pad, min_lon - lon_pad],
-        [max_lat + lat_pad, max_lon + lon_pad],
+        [
+            max(-90.0, min_lat - lat_pad),
+            max(-180.0, min_lon - lon_pad),
+        ],
+        [
+            min(90.0, max_lat + lat_pad),
+            min(180.0, max_lon + lon_pad),
+        ],
     ]
 
 
@@ -48,8 +89,8 @@ def best_zoom(min_lon, max_lon, min_lat, max_lat, width, height):
 def normalize_zoom(zoom):
     if isinstance(zoom, (int, float)) and not isinstance(zoom, bool):
         value = float(zoom)
-        if value > 0:
-            return int(round(value))
+        if value >= 0:
+            return round(value, 2)
     return None
 
 

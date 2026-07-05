@@ -30,8 +30,8 @@ def marker_radius(total, min_total, max_total, scale_by_total):
 
 def chart_type_label(marker_type):
     if marker_type == "pie":
-        return "Pie chart"
-    return "Vertical bar"
+        return "Pie"
+    return "Bar"
 
 
 def normalize_marker_type(marker_type):
@@ -74,6 +74,16 @@ def make_chart_svg(values, chart_colors, radius, marker_type):
         return (
             f'<svg width="{total_w:.0f}" height="{bar_h}" viewBox="0 0 {total_w} {bar_h}" '
             f'style="display:block;">{"".join(segments)}</svg>'
+        )
+
+    positive = [(value, color) for value, color in zip(values, colors) if value > 0]
+    if len(positive) == 1:
+        size = radius * 2
+        _, color = positive[0]
+        return (
+            f'<svg width="{size:.0f}" height="{size:.0f}" viewBox="0 0 {size} {size}" '
+            f'style="display:block;"><circle cx="{radius}" cy="{radius}" r="{radius}" '
+            f'fill="{color}" stroke="#ffffff" stroke-width="1"/></svg>'
         )
 
     size = radius * 2
@@ -140,6 +150,12 @@ def draw_chart_on_image(draw, x, y, values, chart_colors, radius, marker_type):
             top = bottom - seg_h
             draw.rectangle([x_cursor, top, x_cursor + bar_w, bottom], fill=color)
             x_cursor += bar_w
+        return
+
+    positive = [(value, color) for value, color in zip(values, rgb_colors) if value > 0]
+    if len(positive) == 1:
+        _, color = positive[0]
+        draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=color, outline="white")
         return
 
     start_angle = 0

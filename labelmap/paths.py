@@ -20,6 +20,35 @@ def repo_root():
     return Path(__file__).resolve().parent.parent
 
 
+def sample_template_file_path():
+    """Locate the static upload sample CSV (independent of built-in datasets)."""
+    name = "labelmap-sample.csv"
+    search_dirs = []
+    env_dir = os.environ.get("LABELMAP_APP_DIR")
+    if env_dir:
+        search_dirs.append(Path(env_dir))
+    root = repo_root()
+    search_dirs.extend(
+        [
+            root / "data",
+            root,
+            Path(app_dir()).resolve().parent,
+            Path(__file__).resolve().parent.parent,
+            Path.cwd(),
+        ]
+    )
+    seen = set()
+    for base in search_dirs:
+        base = base.resolve()
+        if base in seen:
+            continue
+        seen.add(base)
+        path = base / name
+        if path.is_file():
+            return str(path)
+    return None
+
+
 def template_file_path():
     """Locate bundled map.xlsx for sample data and template download."""
     name = "map.xlsx"
