@@ -14,6 +14,7 @@ from labelmap.config import (
     DEFAULT_CHART_COLORS,
     DEFAULT_MAP_STYLE,
     INTERACTIVE_MAP_HEIGHT_CSS,
+    INTERACTIVE_MAP_HEIGHT_CSS_MOBILE,
     MAP_STYLE_OPTIONS,
 )
 from labelmap.data_filter import apply_data_filters, get_filter_state
@@ -1314,6 +1315,60 @@ st.markdown(
     [data-testid="stDialog"] [data-testid="stHorizontalBlock"] + [data-testid="stHorizontalBlock"]
         [data-testid="stButton"] button {
         border-radius: var(--labelmap-control-radius) !important;
+    }
+    @media (max-width: 768px) {
+        :root {
+            --labelmap-map-height: """
+    + INTERACTIVE_MAP_HEIGHT_CSS_MOBILE
+    + """;
+        }
+        .main .block-container,
+        [data-testid="stMainBlockContainer"] {
+            padding-left: 0.75rem !important;
+            padding-right: 0.75rem !important;
+        }
+        [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"] {
+            flex-direction: column !important;
+            min-height: 0 !important;
+        }
+        [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]
+            > [data-testid="stColumn"],
+        [data-testid="stMainBlockContainer"] [data-testid="stHorizontalBlock"]
+            > [data-testid="column"] {
+            width: 100% !important;
+            max-width: 100% !important;
+            flex: 1 1 auto !important;
+            align-self: stretch !important;
+            height: auto !important;
+            min-height: 0 !important;
+        }
+        .main .block-container > div > div > div[data-testid="stHorizontalBlock"]:first-of-type {
+            min-height: 0 !important;
+        }
+        .main .block-container > div > div > div[data-testid="stHorizontalBlock"]:first-of-type
+            > div[data-testid="column"]:nth-child(2), > div[data-testid="stColumn"]:nth-child(2) {
+            height: var(--labelmap-map-height) !important;
+            min-height: var(--labelmap-map-height) !important;
+        }
+        .labelmap-label a,
+        .labelmap-contact-label a {
+            white-space: normal !important;
+            word-break: break-word !important;
+            overflow-wrap: anywhere !important;
+        }
+        [data-testid="stRadio"] [role="radiogroup"][aria-label="Chart style"] {
+            flex-direction: column !important;
+            align-items: stretch !important;
+        }
+        [data-testid="stRadio"] [role="radiogroup"][aria-label="Chart style"] > label {
+            width: 100% !important;
+        }
+        [data-testid="stFileUploader"] {
+            display: block !important;
+        }
+        .st-key-upload_csv_trigger {
+            display: none !important;
+        }
     }
     </style>
     """,

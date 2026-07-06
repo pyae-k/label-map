@@ -1,6 +1,8 @@
 """Streamlit UI components for LabelMap."""
 
+import base64
 import json
+import re
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -99,13 +101,45 @@ _DOC_ICON_SVGS = {
 }
 
 
+_DOC_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((images/[^)]+)\)")
+
+
+def _image_mime(image_bytes: bytes) -> str:
+    header = image_bytes[:12]
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if header[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/png"
+
+
+def _embed_doc_images(text: str, doc_dir) -> str:
+    """Inline local guide images so they render inside Streamlit markdown."""
+
+    def _replace(match: re.Match[str]) -> str:
+        alt_text = match.group(1)
+        image_path = doc_dir / match.group(2)
+        if not image_path.is_file():
+            return match.group(0)
+        image_bytes = image_path.read_bytes()
+        mime = _image_mime(image_bytes)
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        return f"![{alt_text}](data:{mime};base64,{encoded})"
+
+    return _DOC_IMAGE_RE.sub(_replace, text)
+
+
 def _load_doc_markdown(relative_path: str) -> str:
     path = repo_root() / relative_path
     if not path.is_file():
         return f"*Document not found: `{relative_path}`*"
     text = path.read_text(encoding="utf-8")
     if path.parent.name == "docs":
-        text = text.replace("](images/", "](docs/images/")
+        text = _embed_doc_images(text, path.parent)
     return text
 
 

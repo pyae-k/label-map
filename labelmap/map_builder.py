@@ -125,6 +125,12 @@ html, body {
 .leaflet-touch .leaflet-control-zoom-fullscreen.fullscreen-icon {
     background-position: center !important;
 }
+.leaflet-touch .leaflet-control-zoom a,
+.leaflet-touch .leaflet-control-zoom-fullscreen {
+    width: 44px !important;
+    height: 44px !important;
+    line-height: 44px !important;
+}
 .leaflet-control-zoom-fullscreen.fullscreen-icon.leaflet-fullscreen-on {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='__TEXT_COLOR_URI__' stroke-width='2.2' stroke-linecap='square'%3E%3Cpolyline points='9 9 3 9 3 3'/%3E%3Cpolyline points='15 9 21 9 21 3'/%3E%3Cpolyline points='9 15 3 15 3 21'/%3E%3Cpolyline points='15 15 21 15 21 21'/%3E%3C/svg%3E") !important;
 }

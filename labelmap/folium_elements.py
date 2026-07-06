@@ -8,7 +8,6 @@ from labelmap.config import (
     APP_TEXT_COLOR,
     DEFAULT_MAP_STYLE,
     LABEL_SAVE_MESSAGE,
-    MAP_LOADING_MESSAGE,
     build_legend_style,
     connector_style_for_map_style,
     label_theme_for_map_style,
@@ -369,7 +368,7 @@ class MapFrameFill(MacroElement):
                 var size = frameSize();
                 var frameWidth = enforcedW > 0 ? enforcedW : size.width;
                 var frameHeight = size.height;
-                if (frameHeight < 100) {
+                if (frameHeight < 50) {
                     return false;
                 }
                 if (
@@ -648,9 +647,8 @@ class MapViewRestore(MacroElement):
             var targetZoom = {{ this.zoom }};
             var targetFullscreen = {{ this.fullscreen | tojson }};
             var worldFit = {{ this.world_fit | tojson }};
-            var minMapHeight = 100;
+            var minMapHeight = 50;
             var initialViewApplied = false;
-            var loadingMessage = {{ this.loading_message | tojson }};
             var worldBounds = L.latLngBounds(
                 L.latLng(-85.05112878, -180),
                 L.latLng(85.05112878, 180)
@@ -675,48 +673,6 @@ class MapViewRestore(MacroElement):
                     Math.abs(center.lng - targetLon) <= lonTol
                 );
             }
-
-            function ensureLoadingOverlay() {
-                var overlay = map._labelMapLoadOverlay;
-                if (overlay) {
-                    return overlay;
-                }
-                overlay = L.DomUtil.create('div', 'label-map-load-overlay', map.getContainer());
-                overlay.style.cssText = [
-                    'position:absolute', 'inset:0', 'z-index:10000',
-                    'background:rgba(17,17,19,0.55)', 'display:none',
-                    'align-items:center', 'justify-content:center',
-                    'pointer-events:all', 'cursor:wait',
-                    'font-family:' + {{ this.font_stack | tojson }},
-                    'font-size:13px',
-                    'font-weight:700',
-                    'color:{{ this.text_color }}'
-                ].join(';');
-                overlay.innerHTML = (
-                    '<div style="padding:8px 14px;background:rgba(28,28,30,0.96);' +
-                    'border-radius:8px;box-shadow:0 8px 20px rgba(0,0,0,0.25);' +
-                    'color:{{ this.text_color }};font-family:' +
-                    {{ this.font_stack | tojson }} + ';' +
-                    'font-weight:700;">' +
-                    loadingMessage + '</div>'
-                );
-                map._labelMapLoadOverlay = overlay;
-                return overlay;
-            }
-
-            function showLoadingOverlay() {
-                ensureLoadingOverlay().style.display = 'flex';
-            }
-
-            function hideLoadingOverlay() {
-                var overlay = map._labelMapLoadOverlay;
-                if (overlay) {
-                    overlay.style.display = 'none';
-                }
-            }
-
-            window._showLabelMapLoading = showLoadingOverlay;
-            window._hideLabelMapLoading = hideLoadingOverlay;
 
             function mapHasValidSize() {
                 var size = map.getSize();
@@ -866,7 +822,6 @@ class MapViewRestore(MacroElement):
                     initialViewApplied = true;
                     window._labelMapViewInitialized = true;
                 }
-                hideLoadingOverlay();
                 finalizeViewRestore();
                 return true;
             }
@@ -877,7 +832,6 @@ class MapViewRestore(MacroElement):
                     return false;
                 }
                 applySavedView(true);
-                hideLoadingOverlay();
                 finalizeViewRestore();
                 return true;
             };
@@ -893,7 +847,6 @@ class MapViewRestore(MacroElement):
                     return;
                 }
                 if (attempts <= 0) {
-                    hideLoadingOverlay();
                     return;
                 }
                 setTimeout(function() {
@@ -902,9 +855,6 @@ class MapViewRestore(MacroElement):
             }
 
             map.whenReady(function() {
-                if (!window._labelMapViewInitialized) {
-                    showLoadingOverlay();
-                }
                 tryRestoreView(20);
             });
         })();
@@ -922,7 +872,6 @@ class MapViewRestore(MacroElement):
         world_fit=False,
         default_zoom_offset=0.0,
         reference_default_zoom=0.0,
-        loading_message=MAP_LOADING_MESSAGE,
     ):
         super().__init__()
         self._name = "MapViewRestore"
@@ -934,9 +883,6 @@ class MapViewRestore(MacroElement):
         self.world_fit = world_fit
         self.default_zoom_offset = default_zoom_offset
         self.reference_default_zoom = reference_default_zoom
-        self.loading_message = loading_message
-        self.font_stack = APP_FONT_STACK
-        self.text_color = APP_TEXT_COLOR
 
 
 class MapFullscreenControl(MacroElement):
